@@ -369,12 +369,17 @@ def get_content(content_id: str):
             "message": "No submission with that content_id exists.",
         }), 404
     latest = entries[-1]
+    # The appeal entry carries the new status but no scores; the decision
+    # entry carries the scores. Report the status from the latest entry
+    # and the decision itself from the latest decision entry.
+    decisions = [e for e in entries if e.get("guess") is not None]
+    decision = decisions[-1] if decisions else {}
     return jsonify({
         "content_id": content_id,
         "status": latest.get("status"),
-        "guess": latest.get("guess"),
-        "combined_score": latest.get("combined_score"),
-        "label": latest.get("label"),
+        "guess": decision.get("guess"),
+        "combined_score": decision.get("combined_score"),
+        "label": decision.get("label"),
         "entries": len(entries),
     }), 200
 
