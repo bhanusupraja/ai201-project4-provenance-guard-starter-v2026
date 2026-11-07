@@ -92,7 +92,11 @@ AI_THRESHOLD = 0.65
 # an hour, and a script sending a thousand variations to map your thresholds.
 # Your README has to say why your numbers and not others.
 
-RATE_LIMITING_ENABLED = os.getenv("AI201_RATE_LIMITS", "0") == "1"
+# Unit 8, Milestone 1: rate limiting is ON. A real writer submits a few
+# times an hour; a script mapping the thresholds sends a thousand
+# variations. 10/minute and 200/day let a real writer work all day and
+# still stop a burst cold — the 11th submission in a minute is refused.
+RATE_LIMITING_ENABLED = True
 
 RATE_LIMIT_PER_MINUTE = 10
 RATE_LIMIT_PER_DAY = 200
