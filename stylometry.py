@@ -64,8 +64,18 @@ def sentence_length_spread(text: str) -> float:
     `stdev` raises on fewer than two values. Decide what that should return
     before the attack set decides for you.
     """
-    # TODO: replace this
-    return 0.0
+    lengths = [len(words(s)) for s in sentences(text)]
+    if len(lengths) < 2:
+        # A one-sentence submission has no spread at all. Return 0.0:
+        # no variation observed, which is the most AI-like shape.
+        return 0.0
+    mean = sum(lengths) / len(lengths)
+    if mean == 0:
+        return 0.0
+    # Coefficient of variation: spread relative to the mean, so a long text
+    # and a short one are comparable. Human prose is lumpier, so a higher
+    # value here points human; style_signal flips it.
+    return round(statistics.stdev(lengths) / mean, 4)
 
 
 def type_token_ratio(text: str) -> float:
@@ -80,8 +90,10 @@ def type_token_ratio(text: str) -> float:
     directly comparable on it, and if your test inputs vary a lot in length,
     that alone can look like a signal.
     """
-    # TODO: replace this
-    return 0.0
+    ws = words(text)
+    if not ws:
+        return 0.0
+    return round(len(set(ws)) / len(ws), 4)
 
 
 def punctuation_density(text: str) -> float:
@@ -94,8 +106,15 @@ def punctuation_density(text: str) -> float:
         more interesting than full stops, because they vary more between
         writers.
     """
-    # TODO: replace this
-    return 0.0
+    if not text.strip():
+        return 0.0
+    # All punctuation marks, relative to total characters. Semicolons,
+    # colons, dashes and brackets vary more between writers than full
+    # stops, so they count double in the numerator below.
+    punct = sum(1 for ch in text if ch in ".,!?;:")
+    varied = sum(1 for ch in text if ch in ";:—–-()\"'")
+    total = len(text)
+    return round((punct + varied) / total, 4) if total else 0.0
 
 
 # ── Combining them ───────────────────────────────────────────────────────────
@@ -122,8 +141,28 @@ def style_signal(text: str) -> float:
     you trust it. Plain and ordinary, not formal: formal prose reads as *human*
     to signal one, and it is plain writing that gets accused.
     """
-    # TODO: replace this
-    return 0.5
+    if not text.strip():
+        return 0.5
+
+    def _clamp01(x: float) -> float:
+        return min(max(x, 0.0), 1.0)
+
+    # Direction of each measure (higher component = more AI-like):
+    # - spread: human writing is lumpier. Spread (coefficient of
+    #   variation) around 0.8 or more looks human; near 0 looks AI-like.
+    #   Component = 1 - spread/0.8, clamped.
+    # - type-token ratio: varied vocabulary looks human. A ratio of 0.40
+    #   or less looks AI-like; 0.90 or more looks human.
+    # - punctuation density: more (and more varied) punctuation looks
+    #   human. Density 0.06 or more looks human; near 0 looks AI-like.
+    spread_ai = 1.0 - _clamp01(sentence_length_spread(text) / 0.8)
+    ttr_ai = 1.0 - _clamp01((type_token_ratio(text) - 0.40) / 0.50)
+    punct_ai = 1.0 - _clamp01(punctuation_density(text) / 0.06)
+
+    # Spread is the strongest shape cue, vocabulary next, punctuation
+    # weakest — punctuation is the easiest of the three to fake.
+    score = 0.40 * spread_ai + 0.35 * ttr_ai + 0.25 * punct_ai
+    return round(_clamp01(score), 4)
 
 
 if __name__ == "__main__":
