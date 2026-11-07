@@ -72,7 +72,14 @@ WEIGHT_STYLE_SIGNAL = 0.35
 # that decide who pays for it.
 
 HUMAN_THRESHOLD = 0.35
-AI_THRESHOLD = 0.65
+# UNIT 8 — the one improvement. Raised 0.65 -> 0.80 on 2026-11-06, after
+# the before runs showed plain human writing being accused at 0.67-0.78
+# (criterion 1 missed 4 of 10; FP01-FP04 broke). The unsure band is now
+# 0.35-0.80 instead of 0.35-0.65, so a score has to be very high before
+# the system calls it AI with confidence. The cost, measured in the
+# after runs: clearly-AI text at 0.77 also drops to unsure, so the
+# system accuses less — and detects less.
+AI_THRESHOLD = 0.80
 
 # ⚠️ One thing that catches people out in Milestone 5. A weighted average can
 # only land between its two inputs — so while `style_signal` is still the stub
