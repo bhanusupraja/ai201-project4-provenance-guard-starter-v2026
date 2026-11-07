@@ -30,6 +30,14 @@ from flask import Flask, jsonify, request
 
 import audit
 import config
+import detector
+import scoring
+import stylometry
+
+# Bad-input limits (see criteria.md, criterion 5). Long enough for a poem
+# or an essay, short enough that one submission cannot stall the service.
+MAX_TEXT_CHARS = 20000
+MIN_TEXT_CHARS = 20
 
 app = Flask(__name__)
 
@@ -199,17 +207,85 @@ def submit():
     what should this do when `text` is missing, empty, or enormous? A crash on
     a malformed input is one of the most common real failures there is.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "error": "bad_request",
+            "message": "Send a JSON object with text and creator_id.",
+        }), 400
 
-    # TODO: delete this and build the route.
+    text = payload.get("text")
+    creator_id = payload.get("creator_id")
+
+    # Bad input: never crash, never become a decision (criterion 5).
+    if not isinstance(creator_id, str) or not creator_id.strip():
+        return jsonify({
+            "error": "bad_request",
+            "message": "creator_id is required and must be a non-empty string.",
+        }), 400
+    if text is None or not isinstance(text, str) or not text.strip():
+        audit.log_rejection(creator_id=creator_id, reason="bad_input",
+                            detail="text missing, empty, or not a string")
+        return jsonify({
+            "error": "bad_request",
+            "message": "text is required and must be a non-empty string.",
+        }), 400
+    if len(text) < MIN_TEXT_CHARS:
+        audit.log_rejection(creator_id=creator_id, reason="bad_input",
+                            detail="text too short")
+        return jsonify({
+            "error": "bad_request",
+            "message": f"text must be at least {MIN_TEXT_CHARS} characters.",
+        }), 400
+    if len(text) > MAX_TEXT_CHARS:
+        audit.log_rejection(creator_id=creator_id, reason="bad_input",
+                            detail="text too long")
+        return jsonify({
+            "error": "bad_request",
+            "message": f"text must be at most {MAX_TEXT_CHARS} characters.",
+        }), 400
+
+    creator_id = creator_id.strip()
+    content_id = uuid.uuid4().hex
+
+    try:
+        model_score = detector.model_signal(text)
+    except detector.DetectorUnavailable as exc:
+        return jsonify({
+            "error": "detector_unavailable",
+            "message": str(exc),
+        }), 503
+    except ValueError as exc:
+        return jsonify({
+            "error": "bad_request",
+            "message": str(exc),
+        }), 400
+
+    style_score = stylometry.style_signal(text)
+    combined = scoring.combine_signals(model_score, style_score)
+    guess, label = scoring.score_to_label(combined)
+
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=combined,
+        label=label,
+        status="decided",
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /submit isn't built yet — see the TODO in app.py.",
-        "you_sent": {
-            "text_length": len(payload.get("text", "")),
-            "creator_id": payload.get("creator_id"),
-        },
-    }), 501
+        "content_id": content_id,
+        "guess": guess,
+        "confidence": combined,
+        "combined_score": combined,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+        "status": "decided",
+    }), 200
 
 
 @app.post("/appeal")
@@ -232,14 +308,75 @@ def appeal():
     to the person on the other end. It's the only thing standing between a
     wrong accusation and nothing at all.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "error": "bad_request",
+            "message": "Send a JSON object with content_id and reasoning.",
+        }), 400
 
-    # TODO: delete this and build the route.
+    content_id = payload.get("content_id")
+    reasoning = payload.get("reasoning")
+
+    if not isinstance(content_id, str) or not content_id.strip():
+        return jsonify({
+            "error": "bad_request",
+            "message": "content_id is required and must be a non-empty string.",
+        }), 400
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        return jsonify({
+            "error": "bad_request",
+            "message": "reasoning is required and must be a non-empty string.",
+        }), 400
+
+    entries = audit.entries_for(content_id.strip())
+    if not entries:
+        return jsonify({
+            "error": "content_not_found",
+            "message": "No submission with that content_id exists. "
+                       "Check the content_id from your /submit response.",
+        }), 404
+
+    creator_id = entries[0].get("creator_id", "unknown")
+    audit.log_appeal(
+        content_id=content_id.strip(),
+        creator_id=creator_id,
+        reasoning=reasoning.strip(),
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /appeal isn't built yet — see the TODO in app.py.",
-        "you_sent": payload,
-    }), 501
+        "content_id": content_id.strip(),
+        "status": "under_review",
+        "message": "Your appeal has been recorded. The item is now under "
+                   "review and a person will look at it again. No automatic "
+                   "re-check has been run.",
+        "reasoning": reasoning.strip(),
+    }), 200
+
+
+@app.get("/content/<content_id>")
+def get_content(content_id: str):
+    """Stretch feature: one item's current status.
+
+    Returns the latest entry for a content_id, so a writer (or the site)
+    can see whether an item is decided or under_review without reading
+    the whole log.
+    """
+    entries = audit.entries_for(content_id)
+    if not entries:
+        return jsonify({
+            "error": "content_not_found",
+            "message": "No submission with that content_id exists.",
+        }), 404
+    latest = entries[-1]
+    return jsonify({
+        "content_id": content_id,
+        "status": latest.get("status"),
+        "guess": latest.get("guess"),
+        "combined_score": latest.get("combined_score"),
+        "label": latest.get("label"),
+        "entries": len(entries),
+    }), 200
 
 
 # ── Already works ─────────────────────────────────────────────────────────────
