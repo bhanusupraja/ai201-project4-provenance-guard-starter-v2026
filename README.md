@@ -665,6 +665,96 @@ method in `results/cost_measurement.md`):
   when the service starts. At this scale the cost is minutes of
   one machine's time, not money.
 
+### Run Log and Verdicts
+
+The five criteria (`criteria.md`, committed in `6fd70b2` before any
+test runs) were each run three times by
+`.venv/bin/python run_trials.py` — the `run_trial()` function in
+`run_trials.py`. Each trial started the service fresh with the one
+command and sent 1× `/ping`, 1× first `/submit`, 9× warm
+`/submit`, and 4× bad inputs; then it read `logs/runs.jsonl`
+back and matched every request it sent. Nothing was changed
+between trials. Full per-call tables:
+`results/trials_2026-11-10_before.md`.
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Every run is logged | all 15 requests logged, fields present | 15 entries, 10/10 submits, 4/4 bad | 15 entries, 10/10 submits, 4/4 bad | 15 entries, 10/10 submits, 4/4 bad | MET |
+| 2. The run path works | /ping answers 200 | 200 | 200 | 200 | MET |
+| 3. A warm run is fast enough | warm mean under 2s | 0.75s | 0.75s | 0.58s | MET |
+| 4. The bad path is handled and logged | 4/4 400s, 4/4 logged | 4/4, 4/4 | 4/4, 4/4 | 4/4, 4/4 | MET |
+| 5. The first call, model loading included | first call within 20s | 10.83s | 12.36s | 10.25s | MET |
+
+All five MET. There were no misses, so there was nothing to
+diagnose.
+
+What the run produced, pasted from the trial run
+(`run_trials.py`, `run_trial()`):
+
+```
+Trial 1: server is up.
+  /ping -> 200 in 0.0s
+  first /submit (ai-generic) -> 200 in 10.83s  guess=unsure
+  warm /submit (ai-sysworks) -> 200 in 0.52s  guess=unsure
+  warm /submit (ai-fastpaced) -> 200 in 0.49s  guess=unsure
+  warm /submit (human-diwali) -> 200 in 0.72s  guess=human
+  warm /submit (human-ornate) -> 200 in 0.66s  guess=human
+  warm /submit (human-fragment) -> 200 in 0.80s  guess=human
+  warm /submit (human-train) -> 200 in 0.61s  guess=unsure
+  warm /submit (human-poem) -> 200 in 1.14s  guess=unsure
+  warm /submit (borderline-paraphrase) -> 200 in 1.08s  guess=unsure
+  warm /submit (human-walk) -> 200 in 0.77s  guess=unsure
+  bad input (text missing) -> 400 in 0.01s
+  bad input (text empty) -> 400 in 0.0s
+  bad input (text null) -> 400 in 0.0s
+  bad input (text over 20,000 chars) -> 400 in 0.0s
+  run log: 15 new entries, fields ok=True, ping logged=True, bad 400s=4/4, bad logged=4/4
+```
+
+(Trials 2 and 3 read the same way — first calls 12.36s and
+10.25s, warm means 0.75s and 0.58s, 4/4 400s, 15 log entries.
+See the full file for both.)
+
+### The Improvement
+
+One change only. In `app.py`, `main()` now loads the model at
+startup — `detector.warm_up()` — instead of letting the first
+submission pay for it. `warm_up()` already existed in
+`detector.py` ("Load the model without scoring anything. Run
+this before class."); it was just never called. One guard: with
+the reloader on (debug mode), `main()` also runs in the parent
+watcher process, so the warm-up only runs in the process that
+will actually serve (`WERKZEUG_RUN_MAIN`) or when there is no
+reloader — otherwise the model would load twice.
+
+Why this one: the first call was the biggest measured cost —
+10 to 12 seconds, 15 to 20 times a warm call — and it was the
+cost the first user paid without warning.
+
+Before and after, same 3-trial run (`run_trials.py`; full
+tables in `results/trials_2026-11-10_before.md` and
+`results/trials_2026-11-10_after.md`):
+
+| | Before (model loads on first call) | After (model preloaded at startup) |
+|---|---|---|
+| First call, trial 1 / 2 / 3 | 10.83s / 12.36s / 10.25s | 1.03s / 0.45s / 0.37s |
+| Warm mean, trial 1 / 2 / 3 | 0.75s / 0.75s / 0.58s | 0.43s / 0.35s / 0.34s |
+| Server answers /health after | not recorded — it answered at once, the load came later | 9.3s / 11.61s / 6.19s |
+| C1, C2, C4 | 3/3 held | 3/3 held |
+
+Trade-off, named honestly: the wait did not disappear, it
+moved. The server now takes 6 to 12 seconds to answer
+`/health` after the one command, where before it answered at
+once and the first user waited instead. If the service starts
+and nobody ever submits, that load was wasted. The warm means
+also look faster after (0.43s / 0.35s / 0.34s against 0.75s /
+0.75s / 0.58s) — I am not claiming the change caused that; the
+machine was less loaded during the after run, and the warm
+path is the same code. The caused effect is the first call:
+10–12s down to under 1.1s. The criterion itself was not
+changed and the target was not loosened — the improvement is
+what moved the number.
+
 ---
 
 📖 **How to run this project: [RUNNING.md](RUNNING.md)**

@@ -154,13 +154,19 @@ def run_trial(n: int, tag: str) -> dict:
         stdout=server_log,
         stderr=subprocess.STDOUT,
     )
+    server_started = time.perf_counter()
     try:
         print(f"Trial {n}: starting server on port {PORT} (pid {proc.pid}) ...")
         if not _wait_for_health():
             print(f"Trial {n}: ERROR — server did not answer /health in time.")
             result["error"] = "server did not start"
             return result
-        print(f"Trial {n}: server is up.")
+        # How long from the command to the first /health answer. This
+        # is the trade-off of the Milestone 6 improvement: the model
+        # load moved to startup, so the server takes longer to answer
+        # at all, and the first submission is warm instead.
+        result["startup_seconds"] = round(time.perf_counter() - server_started, 2)
+        print(f"Trial {n}: server is up after {result['startup_seconds']}s.")
 
         # Snapshot the run log BEFORE /ping, so the ping is inside
         # the trial's own entries. (An earlier version snapshotted
@@ -355,8 +361,14 @@ def main() -> int:
         "were scored 0/3 by the checker, not by the service: the 400s",
         "themselves were 4/4, and the log held the entries. The checker",
         "was fixed (right field names, snapshot before /ping) and the",
-        "trials were re-run from scratch. The three trials below are",
-        "that clean re-run.",
+        "trials were re-run from scratch.",
+        "",
+        "That clean re-run is the BEFORE set, saved as",
+        "results/trials_2026-11-10_before.md: all five criteria held",
+        "3/3 (first calls 10.83s / 12.36s / 10.25s, warm means 0.75s /",
+        "0.75s / 0.58s). THIS file is the AFTER set, run after the",
+        "Milestone 6 improvement (the model is preloaded at startup,",
+        "so the first submission is warm). Nothing else changed.",
         "",
         "## Method",
         "",
@@ -381,6 +393,7 @@ def main() -> int:
             f"## Trial {t['trial']}",
             "",
             f"- Creator: `{t.get('creator')}`",
+            f"- Startup: /health answered after {t.get('startup_seconds')}s",
             f"- C2 run path: /ping -> {t.get('ping_status')} "
             f"({t.get('ping_seconds')}s)",
             f"- C5 first call: {t.get('first_seconds')}s "

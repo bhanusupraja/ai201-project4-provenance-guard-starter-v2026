@@ -24,6 +24,7 @@ Routes:
     GET  /health      is the service up, and is the model loaded
 """
 
+import os
 import time
 import uuid
 
@@ -496,6 +497,17 @@ def main():
     print('    -H "Content-Type: application/json" \\')
     print("    -d '{\"message\": \"hello\"}'")
     print()
+    # CAPSTONE, Milestone 6 — one improvement: load the model at
+    # startup instead of on the first submission. Before, the first
+    # /submit paid the ~11s load; now it is warm like every other
+    # call. Trade-off: the server takes ~15s to answer /health after
+    # the command, because the load moved there. With the reloader
+    # on (debug mode), main() also runs in the parent watcher
+    # process — only warm up in the process that will actually
+    # serve (WERKZEUG_RUN_MAIN), or when there is no reloader.
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not config.DEBUG:
+        print(f"  warming up: {detector.warm_up()}")
+        print()
     # debug=True hands out an interactive debugger, so it's local-only — see config.py
     app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG)
 
