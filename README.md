@@ -573,4 +573,39 @@ Muse (this chat) ran the flood test, built the constructed attack set, ran both 
 
 ---
 
+## Capstone — Show What You Know
+
+### What This Extends
+
+Provenance Guard — the AI201 Project 4 system in this same repository
+(Units 7–8, submitted at commit `03026a4`): a Flask service that takes a
+piece of writing at `POST /submit`, scores it with two signals (a local
+GPT-2 perplexity signal and a stylometry signal), combines them into a
+confidence score with three labels, and lets a writer appeal at
+`POST /appeal`. What is new in this unit is the operational layer around
+it, not the detector: the system has only ever run on a laptop, started
+by hand, with no record of what it did beyond the audit log's decisions.
+The capstone adds that layer — a single documented run path, structured
+run logging on every request, and a measured cost per run.
+
+### The Shape
+
+**Shape A — Deploy and instrument.** The extension is the operational
+layer: the run path (`RUNNING.md`), the instrumentation (a structured run
+log with a record per request), and the numbers that come out of it
+(latency and cost per run, measured, not guessed). Path B — local with
+logs. The system carries GPT-2 locally (~550 MB of weights, plus torch);
+a free hosting tier gives 512 MB, so it cannot fit a host, and Path B is
+graded identically. The audit log from Units 7–8 stays as it is; the run
+log is a new, separate record.
+
+**Out of scope — decided now, not later:**
+- No new signal, no new label, no threshold change. The detector is
+  finished; this unit does not re-litigate it.
+- No second retrieval strategy and no new endpoint. The capability set
+  stays exactly as submitted in Unit 8.
+- No hosted deployment and no interface rebuild. Path B is the run path.
+
+---
+
 📖 **How to run this project: [RUNNING.md](RUNNING.md)**
