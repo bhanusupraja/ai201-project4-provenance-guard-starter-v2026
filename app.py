@@ -24,13 +24,15 @@ Routes:
     GET  /health      is the service up, and is the model loaded
 """
 
+import time
 import uuid
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 
 import audit
 import config
 import detector
+import runlog
 import scoring
 import stylometry
 
@@ -40,6 +42,57 @@ MAX_TEXT_CHARS = 20000
 MIN_TEXT_CHARS = 20
 
 app = Flask(__name__)
+
+
+# ── Structured run logging — CAPSTONE, Shape A ───────────────────────────────
+# Every request gets one record in logs/runs.jsonl: what came in, what went
+# out, and how long it took. The decision fields (guess, label, scores) are
+# filled in by the route itself in g.run; this hook only adds the fields
+# every request has. A logging failure never breaks a response.
+
+@app.before_request
+def _run_log_start():
+    """Stamp each request with an id and a start time for the run log."""
+    g.request_id = uuid.uuid4().hex[:12]
+    g.started = time.perf_counter()
+    g.run = {}
+
+
+@app.after_request
+def _run_log_finish(response):
+    """Write one structured record per request, then pass the response on."""
+    started = getattr(g, "started", None)
+    duration_ms = (
+        round((time.perf_counter() - started) * 1000, 1)
+        if started is not None
+        else None
+    )
+    record = dict(getattr(g, "run", {}) or {})
+    record.update({
+        "request_id": getattr(g, "request_id", None),
+        "endpoint": request.path,
+        "method": request.method,
+        "status_code": response.status_code,
+        "duration_ms": duration_ms,
+        "model_loaded": detector._model is not None,
+    })
+    try:
+        runlog.log_run(record)
+    except Exception:
+        # A log that can't be written must not turn a good answer into
+        # a 500. The response goes out exactly as the route built it.
+        pass
+    return response
+
+
+@app.errorhandler(500)
+def _internal_error(exc):
+    """An unhandled exception still leaves a run record, then a JSON 500."""
+    g.run["error"] = f"internal_error: {exc}"
+    return jsonify({
+        "error": "internal_error",
+        "message": "Something went wrong inside the service.",
+    }), 500
 
 
 # ── Rate limiting — UNIT 8 ────────────────────────────────────────────────────
@@ -111,6 +164,7 @@ if config.RATE_LIMITING_ENABLED:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {}
+        g.run["error"] = "rate_limited"
         audit.log_rejection(
             creator_id=payload.get("creator_id", "unknown"),
             reason="rate_limited",
@@ -209,6 +263,7 @@ def submit():
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
+        g.run["error"] = "bad_request: not a JSON object"
         return jsonify({
             "error": "bad_request",
             "message": "Send a JSON object with text and creator_id.",
@@ -216,14 +271,21 @@ def submit():
 
     text = payload.get("text")
     creator_id = payload.get("creator_id")
+    if isinstance(creator_id, str) and creator_id.strip():
+        g.run["creator_id"] = creator_id.strip()
+    if isinstance(text, str):
+        g.run["text_chars"] = len(text)
+        g.run["text_preview"] = runlog.preview(text)
 
     # Bad input: never crash, never become a decision (criterion 5).
     if not isinstance(creator_id, str) or not creator_id.strip():
+        g.run["error"] = "bad_request: creator_id required"
         return jsonify({
             "error": "bad_request",
             "message": "creator_id is required and must be a non-empty string.",
         }), 400
     if text is None or not isinstance(text, str) or not text.strip():
+        g.run["error"] = "bad_input: text missing, empty, or not a string"
         audit.log_rejection(creator_id=creator_id, reason="bad_input",
                             detail="text missing, empty, or not a string")
         return jsonify({
@@ -231,6 +293,7 @@ def submit():
             "message": "text is required and must be a non-empty string.",
         }), 400
     if len(text) < MIN_TEXT_CHARS:
+        g.run["error"] = "bad_input: text too short"
         audit.log_rejection(creator_id=creator_id, reason="bad_input",
                             detail="text too short")
         return jsonify({
@@ -238,6 +301,7 @@ def submit():
             "message": f"text must be at least {MIN_TEXT_CHARS} characters.",
         }), 400
     if len(text) > MAX_TEXT_CHARS:
+        g.run["error"] = "bad_input: text too long"
         audit.log_rejection(creator_id=creator_id, reason="bad_input",
                             detail="text too long")
         return jsonify({
@@ -251,11 +315,13 @@ def submit():
     try:
         model_score = detector.model_signal(text)
     except detector.DetectorUnavailable as exc:
+        g.run["error"] = "detector_unavailable"
         return jsonify({
             "error": "detector_unavailable",
             "message": str(exc),
         }), 503
     except ValueError as exc:
+        g.run["error"] = f"bad_request: {exc}"
         return jsonify({
             "error": "bad_request",
             "message": str(exc),
@@ -264,6 +330,15 @@ def submit():
     style_score = stylometry.style_signal(text)
     combined = scoring.combine_signals(model_score, style_score)
     guess, label = scoring.score_to_label(combined)
+
+    g.run.update({
+        "content_id": content_id,
+        "guess": guess,
+        "confidence": combined,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+    })
 
     audit.log_decision(
         content_id=content_id,
@@ -310,6 +385,7 @@ def appeal():
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
+        g.run["error"] = "bad_request: not a JSON object"
         return jsonify({
             "error": "bad_request",
             "message": "Send a JSON object with content_id and reasoning.",
@@ -317,13 +393,17 @@ def appeal():
 
     content_id = payload.get("content_id")
     reasoning = payload.get("reasoning")
+    if isinstance(content_id, str) and content_id.strip():
+        g.run["content_id"] = content_id.strip()
 
     if not isinstance(content_id, str) or not content_id.strip():
+        g.run["error"] = "bad_request: content_id required"
         return jsonify({
             "error": "bad_request",
             "message": "content_id is required and must be a non-empty string.",
         }), 400
     if not isinstance(reasoning, str) or not reasoning.strip():
+        g.run["error"] = "bad_request: reasoning required"
         return jsonify({
             "error": "bad_request",
             "message": "reasoning is required and must be a non-empty string.",
@@ -331,6 +411,7 @@ def appeal():
 
     entries = audit.entries_for(content_id.strip())
     if not entries:
+        g.run["error"] = "content_not_found"
         return jsonify({
             "error": "content_not_found",
             "message": "No submission with that content_id exists. "
@@ -338,6 +419,7 @@ def appeal():
         }), 404
 
     creator_id = entries[0].get("creator_id", "unknown")
+    g.run["creator_id"] = creator_id
     audit.log_appeal(
         content_id=content_id.strip(),
         creator_id=creator_id,
@@ -363,6 +445,7 @@ def get_content(content_id: str):
     the whole log.
     """
     entries = audit.entries_for(content_id)
+    g.run["content_id"] = content_id
     if not entries:
         return jsonify({
             "error": "content_not_found",
@@ -406,6 +489,7 @@ def main():
     print(f"  detector model:  {config.DETECTOR_MODEL}")
     print(f"  rate limiting:   {'ON' if config.RATE_LIMITING_ENABLED else 'off (unit 8)'}")
     print(f"  audit log:       {config.AUDIT_LOG}")
+    print(f"  run log:         {config.RUN_LOG}")
     print()
     print("Check it's alive:")
     print(f'  curl -X POST http://{config.HOST}:{config.PORT}/ping \\')
