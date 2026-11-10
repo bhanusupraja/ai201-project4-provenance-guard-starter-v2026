@@ -8,6 +8,55 @@ assumed — the starter ships one that already answers.
 
 ---
 
+## Capstone — the run path (Path B)
+
+The capstone runs this system locally, with logs. Path B, not hosted:
+the service carries GPT-2 (~525 MB of weights, plus torch), and a free
+hosting tier gives 512 MB — it cannot fit, and there is no configuration
+that fixes that. The arithmetic is in "Running it somewhere else (unit 9)"
+below.
+
+### The one command
+
+From the repo root, in the project virtualenv:
+
+```bash
+.venv/bin/python app.py
+```
+
+That serves on `http://127.0.0.1:5000`. Check it is alive:
+
+```bash
+curl -X POST http://127.0.0.1:5000/ping -H "Content-Type: application/json" -d '{"message": "hello"}'
+```
+
+### What the environment needs
+
+- Python 3.12.3 (supported: 3.11, 3.12, 3.13 — NOT 3.14).
+- Dependencies pinned in `requirements.txt`
+  (`pip install -r requirements.txt`).
+- GPT-2 weights, ~525 MB, downloaded once into the Hugging Face cache
+  (`~/.cache/huggingface/hub/models--gpt2`); the first submission loads
+  them into memory, which takes 15–18 seconds, and later ones take
+  about a second.
+- The run log the capstone adds: `logs/runs.jsonl`, one structured
+  record per request (see `runlog.py`). The audit log
+  `logs/audit.jsonl` is unchanged from Units 7–8.
+
+### Verified from a clean checkout
+
+On 2026-11-10 the repo was cloned into a fresh folder on a Linux
+machine, a new virtualenv was created, `pip install -r requirements.txt`
+was run, and `python test.py` gave **9 passed, 0 failed**. Then the one
+command (`.venv/bin/python app.py`) started the service and
+`POST /ping` answered 200. One thing the test found: `pip install`
+stages big wheels in `/tmp`, and that machine's `/tmp` is only 512 MB,
+so the install failed twice with "No space left on device" until
+`TMPDIR` was pointed at a bigger disk. If your `/tmp` is small, set
+`TMPDIR` to a folder with room before installing.
+
+---
+
 ## Before your first class
 
 ```bash
