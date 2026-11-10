@@ -656,14 +656,18 @@ method in `results/cost_measurement.md`):
 
 - First call, including loading GPT-2 into memory: **18.10s**
   (a second run measured 15.28s — the load cost, not the run cost).
+  After the Milestone 6 improvement the load happens at startup
+  instead: the first call is now warm (0.45s–1.03s in the three
+  trials), and the service answers `/health` after 6–12s.
 - Warm calls, model already loaded: **mean 0.87s, median 0.83s,
   min 0.66s, max 1.12s** (the first run measured mean 0.95s,
   median 0.88s — the same picture).
 - Model on disk (GPT-2): **525.4 MB**. Python 3.12.3.
 - 100 warm runs a day: 100 × 0.87s = **87 seconds, about 1.4
-  minutes** of compute a day, plus one model load of about 18s
-  when the service starts. At this scale the cost is minutes of
-  one machine's time, not money.
+  minutes** of compute a day, plus one model load of about 6–12s
+  at startup (the load moved there in Milestone 6; before, it was
+  about 15–18s on the first call). At this scale the cost is
+  minutes of one machine's time, not money.
 
 ### Run Log and Verdicts
 
@@ -754,6 +758,43 @@ path is the same code. The caused effect is the first call:
 10–12s down to under 1.1s. The criterion itself was not
 changed and the target was not loosened — the improvement is
 what moved the number.
+
+### What's Still Broken
+
+- The first trial run stalled and was never explained. On the
+  first attempt, the first `/submit` timed out after 180s and
+  left no run-log record; a manual first `/submit` on a fresh
+  server minutes later took 16.09s and returned 200. The stall
+  was not reproduced, so I do not know what caused it — a slow
+  model load on a busy machine is the best guess, not a finding.
+- The server takes 6–12s to answer after the one command now
+  (the trade-off of the preload). If it starts and nobody ever
+  submits, that load was wasted.
+- The model is 525 MB and the service needs torch beside it, so
+  it will not fit a 512 MB free host — that is why Path B (local
+  with logs) was chosen, and it stays the honest limit.
+- The run log grows without bound. Every request appends to
+  `logs/runs.jsonl` and nothing ever rotates or cleans it up; on
+  a long-running service that file would need rotation.
+- Warm-run times vary run to run (trial means 0.34s–0.75s). The
+  machine decides as much as the code does, so a single fast or
+  slow run proves little — that is why each criterion was run
+  three times.
+
+### How I Used AI
+
+Two moments, in my own words.
+
+**Moment 1:** I just used Muse as AI assistance while writing
+the criteria. It asked me one question at a time and gave me
+two options for each number and each reason, and I picked every
+one myself — 2 seconds for the warm runs, 20 seconds for the
+first call, and each reason.
+
+**Moment 2:** I just used Muse as AI assistance to put my
+choices into the file and check them. I sent the numbers and
+reasons in this chat, Muse put my exact words into criteria.md
+and checked each one, and I reviewed the file and approved it.
 
 ---
 
